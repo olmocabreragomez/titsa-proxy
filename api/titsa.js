@@ -18,48 +18,69 @@ export default async function handler(req, res) {
 
     const html = await response.text();
 
-    // Nombre de la línea
-    const nombreMatch = html.match(/Línea\s+\d+\s*[-–]\s*([^\[<\n]+)/i);
-    const nombre = nombreMatch ? nombreMatch[1].trim() : `Línea ${lineaPadded}`;
+    const cleanText = (str) => str
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
 
-    // Duración
+    const nombreMatch = html.match(/Línea\s+\d+\s*[-–]\s*([^\[<\n]+)/i);
+    const nombre = nombreMatch ? cleanText(nombreMatch[1]) : `Línea ${lineaPadded}`;
+
     const duracionMatch = html.match(/(\d+)\s*min/i);
     const duracion = duracionMatch ? `${duracionMatch[1]} minutos` : '';
 
-    // Extraer recorrido (párrafo de paradas)
-    const recorridoMatch = html.match(/Intercambiador[^<\n]{10,}/i);
-    const recorrido = recorridoMatch ? recorridoMatch[0].replace(/<[^>]+>/g, '').trim() : '';
+    const recorridoMatch = html.match(/(?:Intercambiador|Estación|Santa Cruz|La Laguna)[^<\n]{20,}/i);
+    const recorrido = recorridoMatch ? cleanText(recorridoMatch[0]) : '';
 
-    // Extraer todas las tablas de horarios
-    const tablas = [];
+    const horarios = [];
     const tablaRegex = /<table[\s\S]*?<\/table>/gi;
     let m;
+
     while ((m = tablaRegex.exec(html)) !== null) {
-      const texto = m[0]
-        .replace(/<br\s*\/?>/gi, ' ')
-        .replace(/<th[^>]*>([\s\S]*?)<\/th>/gi, (_, t) => `| ${t.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim()} `)
-        .replace(/<td[^>]*>([\s\S]*?)<\/td>/gi, (_, t) => `| ${t.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim()} `)
-        .replace(/<tr[^>]*>/gi, '\n')
-        .replace(/<[^>]+>/g, '')
-        .replace(/\n\s*\n/g, '\n')
-        .trim();
-      if (texto.length > 100 && (texto.includes('LABORABLE') || texto.includes('SÁBADO') || texto.includes(':') )) {
-        tablas.push(texto);
+      const tabla = m[0];
+      if (!tabla.match(/LABORABLE|SÁBADO|SALIDAS|DEPARTURES/i)) continue;
+
+      const filas = [];
+      const filaRegex = /<tr[\s\S]*?<\/tr>/gi;
+      let fila;
+
+      while ((fila = filaRegex.exec(tabla)) !== null) {
+        const celdas = [];
+        const celdaRegex = /<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi;
+        let celda;
+
+        while ((celda = celdaRegex.exec(fila[0])) !== null) {
+          const texto = cleanText(celda[1]);
+          if (texto) celdas.push(texto);
+        }
+
+        if (celdas.length > 0) filas.push(celdas.join(' | '));
       }
+
+      if (filas.length > 2) horarios.push(filas.join('\n'));
     }
 
-    // Notas
     const notasMatch = html.match(/Notas?:([\s\S]*?)(?=Mostrar mapa)/i);
-    const notas = notasMatch
-      ? notasMatch[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().substring(0, 1000)
-      : '';
+    let notas = '';
+    if (notasMatch) {
+      notas = cleanText(notasMatch[1])
+        .split('.')
+        .filter(s => s.trim().length > 10)
+        .slice(0, 5)
+        .join('. ')
+        .trim();
+    }
 
     res.status(200).json({
       linea: lineaPadded,
       nombre,
       recorrido,
       duracion,
-      horarios: tablas.slice(0, 5),
+      horarios,
       notas,
       url
     });
