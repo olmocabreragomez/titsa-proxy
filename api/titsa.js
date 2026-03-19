@@ -18,72 +18,33 @@ export default async function handler(req, res) {
 
     const html = await response.text();
 
-    const cleanText = (str) => str
-      .replace(/&nbsp;/g, ' ')
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/\s{2,}/g, ' ')
-      .trim();
+    // Nombre correcto desde el selector de líneas
+    const numInt = parseInt(linea);
+    const nombreMatch = html.match(new RegExp('Línea\\s+0*' + numInt + '\\s*[-\u2013]\\s*([^\\[<\\n]+)', 'i'));
+    const nombre = nombreMatch ? nombreMatch[1].replace(/<[^>]+>/g, '').trim() : 'Línea ' + lineaPadded;
 
-    const nombreMatch = html.match(/Línea\s+\d+\s*[-–]\s*([^\[<\n]+)/i);
-    const nombre = nombreMatch ? cleanText(nombreMatch[1]) : `Línea ${lineaPadded}`;
+    // Bloque de contenido entre selector y mapa
+    const bloqueMatch = html.match(/Seleccione una línea[\s\S]*?([\s\S]*?)(?=Mostrar mapa)/i);
+    let texto = '';
 
-    const duracionMatch = html.match(/(\d+)\s*min/i);
-    const duracion = duracionMatch ? `${duracionMatch[1]} minutos` : '';
-
-    const recorridoMatch = html.match(/(?:Intercambiador|Estación|Santa Cruz|La Laguna)[^<\n]{20,}/i);
-    const recorrido = recorridoMatch ? cleanText(recorridoMatch[0]) : '';
-
-    const horarios = [];
-    const tablaRegex = /<table[\s\S]*?<\/table>/gi;
-    let m;
-
-    while ((m = tablaRegex.exec(html)) !== null) {
-      const tabla = m[0];
-      if (!tabla.match(/LABORABLE|SÁBADO|SALIDAS|DEPARTURES/i)) continue;
-
-      const filas = [];
-      const filaRegex = /<tr[\s\S]*?<\/tr>/gi;
-      let fila;
-
-      while ((fila = filaRegex.exec(tabla)) !== null) {
-        const celdas = [];
-        const celdaRegex = /<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi;
-        let celda;
-
-        while ((celda = celdaRegex.exec(fila[0])) !== null) {
-          const texto = cleanText(celda[1]);
-          if (texto) celdas.push(texto);
-        }
-
-        if (celdas.length > 0) filas.push(celdas.join(' | '));
-      }
-
-      if (filas.length > 2) horarios.push(filas.join('\n'));
+    if (bloqueMatch) {
+      texto = bloqueMatch[1]
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&amp;/g, '&')
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<\/tr>/gi, '\n')
+        .replace(/<\/th>/gi, '\t')
+        .replace(/<\/td>/gi, '\t')
+        .replace(/<[^>]+>/g, '')
+        .replace(/\t+/g, ' | ')
+        .replace(/[ ]{3,}/g, ' ')
+        .replace(/\n[ \t|]+\n/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim()
+        .substring(0, 4000);
     }
 
-    const notasMatch = html.match(/Notas?:([\s\S]*?)(?=Mostrar mapa)/i);
-    let notas = '';
-    if (notasMatch) {
-      notas = cleanText(notasMatch[1])
-        .split('.')
-        .filter(s => s.trim().length > 10)
-        .slice(0, 5)
-        .join('. ')
-        .trim();
-    }
-
-    res.status(200).json({
-      linea: lineaPadded,
-      nombre,
-      recorrido,
-      duracion,
-      horarios,
-      notas,
-      url
-    });
+    res.status(200).json({ linea: lineaPadded, nombre, contenido: texto, url });
 
   } catch (err) {
     res.status(500).json({ error: 'Error al consultar TITSA: ' + err.message });
