@@ -1,4 +1,4 @@
-// v3
+// v4
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -19,9 +19,9 @@ export default async function handler(req, res) {
 
     const html = await response.text();
 
-    // Nombre desde el selector
+    // Nombre correcto desde el selector
     const numInt = parseInt(linea);
-    const nombreMatch = html.match(new RegExp('Línea\\s+0*' + numInt + '\\s*[-\u2013]\\s*([^\\[<\\n\\(]+)', 'i'));
+    const nombreMatch = html.match(new RegExp('L[ií]nea\\s+0*' + numInt + '\\s*[-\u2013]\\s*([^\\[<\\n\\(]+)', 'i'));
     const nombre = nombreMatch ? nombreMatch[1].replace(/<[^>]+>/g, '').trim() : 'Linea ' + lineaPadded;
 
     // Extraer bloque desde "Cambiar el sentido" hasta "Mostrar mapa"
@@ -30,15 +30,23 @@ export default async function handler(req, res) {
 
     if (bloqueMatch) {
       contenido = bloqueMatch[0]
+        // Limpiar entidades HTML
         .replace(/&nbsp;/g, ' ')
         .replace(/&amp;/g, '&')
-        .replace(/<br\s*\/?>/gi, '\n')
-        .replace(/<\/tr>/gi, '\n')
-        .replace(/<\/th>/gi, ' | ')
-        .replace(/<\/td>/gi, ' | ')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        // Convertir celdas de tabla a texto con separadores
+        .replace(/<th[^>]*>([\s\S]*?)<\/th>/gi, (_, t) => '| ' + t.replace(/<[^>]+>/g, '').trim() + ' ')
+        .replace(/<td[^>]*>([\s\S]*?)<\/td>/gi, (_, t) => '| ' + t.replace(/<[^>]+>/g, '').trim() + ' ')
+        .replace(/<tr[^>]*>/gi, '\n')
+        .replace(/<br\s*\/?>/gi, ' ')
+        // Quitar resto de etiquetas HTML
         .replace(/<[^>]+>/g, '')
-        .replace(/[ \t]{2,}/g, ' ')
-        .replace(/\n[ |]+\n/g, '\n')
+        // Limpiar espacios y saltos multiples
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n')
+        .replace(/[ \t]+/g, ' ')
+        .replace(/\n[ \t|]+\n/g, '\n')
         .replace(/\n{3,}/g, '\n\n')
         .trim()
         .substring(0, 5000);
