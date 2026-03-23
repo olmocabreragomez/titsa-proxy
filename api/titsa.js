@@ -5,14 +5,74 @@ import { fileURLToPath } from 'url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const data = JSON.parse(readFileSync(join(__dirname, '../titsa_data.json'), 'utf-8'));
 
-// ── Índice inverso: para cada parada, qué líneas pasan (ya está en data.paradas[x].lineas)
-// ── Índice de paradas por línea: para cada línea, qué paradas tiene (construido en memoria)
+// ── Índice de paradas por línea ───────────────────────────────────────────────
 const paradasPorLinea = {};
 for (const [num, linea] of Object.entries(data.lineas)) {
-  const sentidos = linea.sentidos || [];
   const todasParadas = new Set();
-  sentidos.forEach(s => (s.recorrido || []).forEach(p => todasParadas.add(p.id)));
+  (linea.sentidos || []).forEach(s => (s.recorrido || []).forEach(p => todasParadas.add(p.id)));
   paradasPorLinea[num] = [...todasParadas];
+}
+
+// ── Alias de zonas: mapea lo que dice el usuario a IDs de paradas concretas ──
+// Prioriza intercambiadores y paradas principales de cada zona
+const ALIAS_ZONAS = {
+  // Santa Cruz
+  'santa cruz':      ['9449','9450','9451','9452'],  // INTERCAMBIADOR STA.CRUZ
+  'santacruz':       ['9449','9450','9451','9452'],
+  'intercambiador santa cruz': ['9449','9450','9451','9452'],
+  // La Laguna
+  'la laguna':       ['2625','2734','2830'],          // INTERCAMBIADOR LAGUNA
+  'laguna':          ['2625','2734','2830'],
+  'intercambiador laguna': ['2625','2734','2830'],
+  'intercambiador de la laguna': ['2625','2734','2830'],
+  // Puerto de la Cruz
+  'puerto de la cruz': ['5090'],
+  'puerto cruz':     ['5090'],
+  // Aeropuerto
+  'aeropuerto':      ['3916','3917','3918','3919'],   // AEROPUERTO TFN
+  'tenerife norte':  ['3916','3917'],
+  'tenerife sur':    ['6001','6002'],
+  'los rodeos':      ['3916','3917'],
+  'reina sofia':     ['6001','6002'],
+  // Los Cristianos / Costa Adeje
+  'los cristianos':  ['6100','6101','6102'],
+  'costa adeje':     ['6200','6201'],
+  'adeje':           ['6200','6201'],
+  // Otras zonas comunes
+  'icod':            ['1100','1101'],
+  'garachico':       ['1200'],
+  'los realejos':    ['4300','4301'],
+  'tacoronte':       ['2100','2101'],
+  'bajamar':         ['2200'],
+  'tejina':          ['2300'],
+  'tegueste':        ['2400'],
+  'guamasa':         ['2500'],
+  'las mercedes':    ['2600'],
+};
+
+// Dado un texto de zona, devuelve los IDs de parada a usar
+function resolverZona(texto) {
+  const t = texto.toLowerCase().trim();
+  // Buscar en alias exactos primero
+  for (const [alias, ids] of Object.entries(ALIAS_ZONAS)) {
+    if (t.includes(alias) || alias.includes(t)) {
+      // Filtrar solo los IDs que realmente existen en los datos
+      return ids.filter(id => data.paradas[id]);
+    }
+  }
+  // Si no hay alias, buscar por nombre de parada (priorizar intercambiadores)
+  const todas = Object.entries(data.paradas).filter(([, p]) =>
+    p.nombre.toLowerCase().includes(t)
+  );
+  // Ordenar: primero intercambiadores, luego el resto
+  todas.sort(([, a], [, b]) => {
+    const aEsIc = a.nombre.toLowerCase().includes('intercambiador');
+    const bEsIc = b.nombre.toLowerCase().includes('intercambiador');
+    if (aEsIc && !bEsIc) return -1;
+    if (!aEsIc && bEsIc) return 1;
+    return 0;
+  });
+  return todas.slice(0, 10).map(([id]) => id);
 }
 
 export default function handler(req, res) {
@@ -27,7 +87,16 @@ export default function handler(req, res) {
     const num = linea.toString().replace(/^0+/, '');
     const info = data.lineas[num];
     if (!info) return res.status(404).json({ error: `Línea ${linea} no encontrada` });
-    return res.status(200).json({ num, ...info });
+
+    // Solo los 2 sentidos principales (mayor número de paradas = más completo)
+    let sentidos = [...(info.sentidos || [])];
+    if (sentidos.length > 2) {
+      sentidos = sentidos
+        .sort((a, b) => (b.recorrido?.length || 0) - (a.recorrido?.length || 0))
+        .slice(0, 2);
+    }
+
+    return res.status(200).json({ num, ...info, sentidos });
   }
 
   // ── 2. Info de una parada ─────────────────────────────────────────────────
