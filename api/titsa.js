@@ -1,4 +1,9 @@
-import data from '../titsa_data.json' assert { type: 'json' };
+import { readFileSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const data = JSON.parse(readFileSync(join(__dirname, '../titsa_data.json'), 'utf-8'));
 
 export default function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -21,7 +26,6 @@ export default function handler(req, res) {
     const info = data.paradas[pid];
     if (!info) return res.status(404).json({ error: `Parada ${parada} no encontrada` });
 
-    // Añadir info de cada línea que pasa
     const lineas_detalle = info.lineas.map(num => {
       const l = data.lineas[num];
       return l ? { num, nombre: l.nombre } : { num, nombre: '' };
@@ -41,7 +45,6 @@ export default function handler(req, res) {
 
     if (!ori || !dst) return res.status(400).json({ error: 'Faltan origen y destino' });
 
-    // Paradas que coinciden con origen y destino
     const paradas_ori = Object.entries(data.paradas).filter(([, p]) =>
       p.nombre.toLowerCase().includes(ori)
     );
@@ -52,11 +55,9 @@ export default function handler(req, res) {
     if (!paradas_ori.length) return res.status(404).json({ error: `No se encontraron paradas con "${ori}"` });
     if (!paradas_dst.length) return res.status(404).json({ error: `No se encontraron paradas con "${dst}"` });
 
-    // Líneas en origen y destino
     const lineas_ori = new Set(paradas_ori.flatMap(([, p]) => p.lineas));
     const lineas_dst = new Set(paradas_dst.flatMap(([, p]) => p.lineas));
 
-    // Líneas directas (pasan por ambos)
     const directas = [...lineas_ori].filter(l => lineas_dst.has(l));
 
     const resultado = {
@@ -69,7 +70,6 @@ export default function handler(req, res) {
       transbordos: []
     };
 
-    // Si no hay directas, buscar transbordos de 1 paso
     if (!directas.length) {
       const candidatos = [];
       for (const l1 of lineas_ori) {
@@ -83,7 +83,6 @@ export default function handler(req, res) {
           if (!linea2) continue;
           const stops2 = new Set(linea2.recorrido.map(p => p.id));
 
-          // Paradas comunes = punto de transbordo
           const comunes = [...stops1].filter(s => stops2.has(s));
           if (comunes.length) {
             const parada_transbordo = data.paradas[comunes[0]];
