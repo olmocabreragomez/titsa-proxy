@@ -5,46 +5,51 @@ import { fileURLToPath } from 'url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const data = JSON.parse(readFileSync(join(__dirname, '../titsa_data.json'), 'utf-8'));
 
+// ── Índice inverso: para cada parada, qué líneas pasan (ya está en data.paradas[x].lineas)
+// ── Índice de paradas por línea: para cada línea, qué paradas tiene (construido en memoria)
+const paradasPorLinea = {};
+for (const [num, linea] of Object.entries(data.lineas)) {
+  const sentidos = linea.sentidos || [];
+  const todasParadas = new Set();
+  sentidos.forEach(s => (s.recorrido || []).forEach(p => todasParadas.add(p.id)));
+  paradasPorLinea[num] = [...todasParadas];
+}
+
 export default function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  const { action, linea, parada, origen, destino } = req.query;
+  const { linea, parada, origen, destino } = req.query;
 
   // ── 1. Info de una línea ──────────────────────────────────────────────────
-  if (action === 'linea' || linea) {
-    const num = (linea || '').toString().replace(/^0+/, '');
+  if (linea) {
+    const num = linea.toString().replace(/^0+/, '');
     const info = data.lineas[num];
     if (!info) return res.status(404).json({ error: `Línea ${linea} no encontrada` });
-    return res.status(200).json(info);
+    return res.status(200).json({ num, ...info });
   }
 
   // ── 2. Info de una parada ─────────────────────────────────────────────────
-  if (action === 'parada' || parada) {
-    const pid = (parada || '').toString();
+  if (parada) {
+    const pid = parada.toString();
     const info = data.paradas[pid];
     if (!info) return res.status(404).json({ error: `Parada ${parada} no encontrada` });
 
-    const lineas_detalle = info.lineas.map(num => {
+    const lineas_detalle = (info.lineas || []).map(num => {
       const l = data.lineas[num];
       return l ? { num, nombre: l.nombre } : { num, nombre: '' };
-    });
+    }).filter(l => l.nombre);
 
-    return res.status(200).json({
-      id: pid,
-      nombre: info.nombre,
-      lineas: lineas_detalle
-    });
+    return res.status(200).json({ id: pid, nombre: info.nombre, lineas: lineas_detalle });
   }
 
   // ── 3. Buscar ruta origen → destino ──────────────────────────────────────
-  if (action === 'ruta' || (origen && destino)) {
-    const ori = (origen || '').toLowerCase().trim();
-    const dst = (destino || '').toLowerCase().trim();
+  if (origen && destino) {
+    const ori = origen.toLowerCase().trim();
+    const dst = destino.toLowerCase().trim();
 
-    if (!ori || !dst) return res.status(400).json({ error: 'Faltan origen y destino' });
-
+    // Buscar paradas que coincidan con origen y destino
     const paradas_ori = Object.entries(data.paradas).filter(([, p]) =>
       p.nombre.toLowerCase().includes(ori)
     );
@@ -52,49 +57,81 @@ export default function handler(req, res) {
       p.nombre.toLowerCase().includes(dst)
     );
 
-    if (!paradas_ori.length) return res.status(404).json({ error: `No se encontraron paradas con "${ori}"` });
-    if (!paradas_dst.length) return res.status(404).json({ error: `No se encontraron paradas con "${dst}"` });
+    if (!paradas_ori.length) return res.status(404).json({
+      error: `No encontré paradas con "${ori}". Intenta con un nombre más genérico (ej: "laguna", "aeropuerto", "santa cruz").`
+    });
+    if (!paradas_dst.length) return res.status(404).json({
+      error: `No encontré paradas con "${dst}". Intenta con un nombre más genérico (ej: "laguna", "aeropuerto", "santa cruz").`
+    });
 
-    const lineas_ori = new Set(paradas_ori.flatMap(([, p]) => p.lineas));
-    const lineas_dst = new Set(paradas_dst.flatMap(([, p]) => p.lineas));
+    // Líneas que pasan por al menos una parada de origen
+    const lineas_ori = new Set(paradas_ori.flatMap(([, p]) => p.lineas || []));
+    // Líneas que pasan por al menos una parada de destino
+    const lineas_dst = new Set(paradas_dst.flatMap(([, p]) => p.lineas || []));
 
+    // Líneas directas (en ambos conjuntos)
     const directas = [...lineas_ori].filter(l => lineas_dst.has(l));
 
     const resultado = {
-      origen: paradas_ori.slice(0, 3).map(([id, p]) => ({ id, nombre: p.nombre })),
-      destino: paradas_dst.slice(0, 3).map(([id, p]) => ({ id, nombre: p.nombre })),
-      directas: directas.map(num => {
+      origen: paradas_ori.slice(0, 5).map(([id, p]) => ({ id, nombre: p.nombre })),
+      destino: paradas_dst.slice(0, 5).map(([id, p]) => ({ id, nombre: p.nombre })),
+      directas: directas.slice(0, 5).map(num => {
         const l = data.lineas[num];
-        return l ? { num, nombre: l.nombre, horarios_laborable: l.horarios.laborable } : null;
+        if (!l) return null;
+        // Horarios del primer sentido laborable
+        const primerSentido = (l.sentidos || [])[0];
+        return {
+          num,
+          nombre: l.nombre,
+          horarios_laborable: primerSentido ? (primerSentido.horarios?.laborable || []) : []
+        };
       }).filter(Boolean),
       transbordos: []
     };
 
+    // Si no hay directas, buscar transbordos (parada común entre línea de origen y línea de destino)
     if (!directas.length) {
       const candidatos = [];
-      for (const l1 of lineas_ori) {
-        const linea1 = data.lineas[l1];
-        if (!linea1) continue;
-        const stops1 = new Set(linea1.recorrido.map(p => p.id));
+      const lineas_ori_arr = [...lineas_ori];
+      const lineas_dst_arr = [...lineas_dst];
 
-        for (const l2 of lineas_dst) {
+      outer:
+      for (const l1 of lineas_ori_arr) {
+        const stops1 = new Set(paradasPorLinea[l1] || []);
+        for (const l2 of lineas_dst_arr) {
           if (l1 === l2) continue;
-          const linea2 = data.lineas[l2];
-          if (!linea2) continue;
-          const stops2 = new Set(linea2.recorrido.map(p => p.id));
-
-          const comunes = [...stops1].filter(s => stops2.has(s));
+          const stops2 = paradasPorLinea[l2] || [];
+          const comunes = stops2.filter(s => stops1.has(s));
           if (comunes.length) {
-            const parada_transbordo = data.paradas[comunes[0]];
+            const linea1 = data.lineas[l1];
+            const linea2 = data.lineas[l2];
+            const paradaT = data.paradas[comunes[0]];
+            if (!linea1 || !linea2) continue;
+            // Verificar que el sentido es correcto (l1 lleva al punto de transbordo, l2 lleva al destino)
+            const sentido1 = (linea1.sentidos || []).find(s =>
+              s.recorrido && s.recorrido.some(p => p.id === comunes[0])
+            );
+            const sentido2 = (linea2.sentidos || []).find(s =>
+              s.recorrido && paradas_dst.some(([pid]) =>
+                s.recorrido.some(p => p.id === pid)
+              )
+            );
             candidatos.push({
-              linea1: { num: l1, nombre: linea1.nombre, horarios_laborable: linea1.horarios.laborable },
-              linea2: { num: l2, nombre: linea2.nombre, horarios_laborable: linea2.horarios.laborable },
-              transbordo: { id: comunes[0], nombre: parada_transbordo?.nombre || comunes[0] }
+              linea1: {
+                num: l1,
+                nombre: linea1.nombre,
+                horarios_laborable: sentido1 ? (sentido1.horarios?.laborable || []) : []
+              },
+              linea2: {
+                num: l2,
+                nombre: linea2.nombre,
+                horarios_laborable: sentido2 ? (sentido2.horarios?.laborable || []) : []
+              },
+              transbordo: { id: comunes[0], nombre: paradaT?.nombre || comunes[0] }
             });
-            if (candidatos.length >= 3) break;
+            if (candidatos.length >= 3) break outer;
           }
         }
-        if (candidatos.length >= 3) break;
       }
       resultado.transbordos = candidatos;
     }
@@ -102,18 +139,5 @@ export default function handler(req, res) {
     return res.status(200).json(resultado);
   }
 
-  // ── 4. Buscar paradas por nombre ─────────────────────────────────────────
-  if (action === 'buscar') {
-    const q = (req.query.q || '').toLowerCase().trim();
-    if (!q || q.length < 2) return res.status(400).json({ error: 'Búsqueda muy corta' });
-
-    const resultados = Object.entries(data.paradas)
-      .filter(([, p]) => p.nombre.toLowerCase().includes(q))
-      .slice(0, 10)
-      .map(([id, p]) => ({ id, nombre: p.nombre, lineas: p.lineas }));
-
-    return res.status(200).json({ resultados });
-  }
-
-  return res.status(400).json({ error: 'Acción no válida. Usa: linea, parada, ruta, buscar' });
+  return res.status(400).json({ error: 'Usa: ?linea=X, ?parada=X, o ?origen=X&destino=Y' });
 }
